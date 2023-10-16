@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+import { Vision } from '@google-cloud/vision';
 import {
   Form,
   useActionData,
@@ -7,7 +8,9 @@ import {
 } from "@remix-run/react";
 import { ActionFunctionArgs } from "@remix-run/node";
 import { askLanguageModelShape } from "~/ChatGPTUtils";
+import Webcam from "react-webcam";
 
+const vision = Vision.ImageAnnotatorClient.fromJSON(JSON.parse(process.env.GOOGLE_CREDENTIALS));
 
 function reply({replyText}: {replyText: string}): string {
   return replyText;
@@ -24,8 +27,13 @@ export async function action({
 }: ActionFunctionArgs): Promise<ReturnedDataProps> {
   const body = await request.formData();
   let message = body.get("message") as string;
+  let image = body.get("image") as Blob;
 
   try {
+    const [result] = await vision.textDetection(image);
+    const detections = result.textAnnotations;
+    message += detections[0].description;
+
     const response: string = await askLanguageModelShape(
       message,
       {
@@ -64,14 +72,28 @@ export default function IndexPage() {
   const navigation = useNavigation();
   const submit = useSubmit();
   const [userInput, setUserInput] = useState<string>("");
+  const [image, setImage] = useState<string>("");
+  const webcamRef = React.useRef(null);
+  console.log(data);
 
   const isSubmitting = navigation.state === "submitting";
+
+  const capture = React.useCallback(
+    () => {
+      const imageSrc = webcamRef.current?.getScreenshot();
+      if (imageSrc) {
+        setImage(imageSrc);
+      }
+    },
+    [webcamRef]
+  );
 
   const handleFormSubmit = async (
     event: Pick<Event, "preventDefault" | "stopPropagation">
   ) => {
     const formData = new FormData();
     formData.set("message", userInput);
+    formData.set("image", image);
     submit(formData, {
       method: "POST",
     });
@@ -81,6 +103,12 @@ export default function IndexPage() {
 
   return (
     <main className="flex flex-col h-screen w-screen bg-gray-100 p-4">
+      <Webcam
+        audio={false}
+        ref={webcamRef}
+        screenshotFormat="image/jpeg"
+      />
+      <button onClick={capture}>Capture photo</button>
       <Form
         aria-disabled={isSubmitting}
         method="post"
