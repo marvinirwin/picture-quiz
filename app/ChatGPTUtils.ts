@@ -3,6 +3,7 @@ import openai from 'openai'; // Assuming these are the correct imports
 const cacheFilename = 'responseCache.json';
 let cache: Record<string, any> = {};
 let cacheLoaded = false;
+
 export async function getChatGPTResponse<T>(
     prompt: string,
     messages: openai.Chat.ChatCompletionMessage[],
