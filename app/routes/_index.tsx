@@ -1,61 +1,30 @@
-import React, { useRef, useState } from "react";
-import { Vision } from "@google-cloud/vision";
+import { ActionFunctionArgs } from "@remix-run/node";
 import {
   Form,
   useActionData,
   useNavigation,
   useSubmit,
 } from "@remix-run/react";
-import { ActionFunctionArgs } from "@remix-run/node";
+import { useMachine } from "@xstate/react";
+import React, { useEffect, useState } from "react";
+import Webcam from "react-webcam";
+
 import { askLanguageModelShape } from "~/ChatGPTUtils";
+
+import { getVision } from "../components/getVision.server";
 import {
   checkIdiomaticChinese,
   generateQuestionsFromTextbook,
 } from "../components/prompts";
-import Webcam from "react-webcam";
-
-const vision = Vision.ImageAnnotatorClient.fromJSON(
-  JSON.parse(process.env.GOOGLE_CREDENTIALS as string)
-);
-
-function reply({ replyText }: { replyText: string }): string {
-  return replyText;
-}
-function setQuestions({ questions }: { questions: string[] }): string[] {
-  return questions;
-}
 
 export interface ReturnedDataProps {
-  answeredQuestionResponse?: { question: string; answer: string; response: string };
+  answeredQuestionResponse?: {
+    question: string;
+    answer: string;
+    response: string;
+  };
   responseQuestions?: string[];
   error?: string;
-}
-
-async function checkAnswer({
-  question,
-  answer,
-  knownWords,
-}: {
-  question: string;
-  answer: string;
-  knownWords: string[];
-}): Promise<string> {
-  const response = await askLanguageModelShape(
-    checkIdiomaticChinese(question, answer),
-    {
-      name: "reply",
-      description: "Replies to the message",
-      parameters: {
-        replyText: {
-          type: "string",
-          description: "The reply to the message",
-        },
-      },
-      required: ["replyText"],
-    },
-    reply
-  );
-  return response as string;
 }
 
 export interface CheckAnswerBody {
@@ -67,6 +36,13 @@ export interface CheckAnswerBody {
 export interface GenerateQuestionsBody {
   type: "generateQuestions";
   image: Blob;
+}
+
+export function reply({ replyText }: { replyText: string }): string {
+  return replyText;
+}
+function setQuestions({ questions }: { questions: string[] }): string[] {
+  return questions;
 }
 
 /**
@@ -82,6 +58,7 @@ export interface GenerateQuestionsBody {
 export async function action({
   request,
 }: ActionFunctionArgs): Promise<ReturnedDataProps> {
+  const vision = getVision();
   const body = await request.formData();
   const type = body.get("type") as string;
 
@@ -93,17 +70,29 @@ export async function action({
       answeredQuestionResponse: {
         question,
         answer,
-        response
+        response,
       },
     };
   } else if (type === "generateQuestions") {
-    const image = body.get("image") as Blob;
+    const imageBlob = body.get("image") as Blob;
+    const imageBuffer = Buffer.from(await imageBlob.arrayBuffer());
     try {
-      const [result] = await vision.textDetection(image);
-      const detections = result.textAnnotations;
+      const [result] = await vision.textDetection(imageBuffer);
+      const error = result.error;
+      if (error) {
+        return {
+          error: error.message || "Unknown text detection error",
+        };
+      }
+      const detection = result.textAnnotations?.[0];
+      if (!detection) {
+        return {
+          error: `Detection object is empty`,
+        };
+      }
       const response: string[] = await askLanguageModelShape<string[]>(
         generateQuestionsFromTextbook({
-          ocrText: detections[0].description,
+          ocrText: detection.description || "",
           knownWords: ["All HSK3 words"],
           targetSubject: "War",
         }),
@@ -122,7 +111,7 @@ export async function action({
           },
           required: ["questions"],
         },
-        setQuestions
+        setQuestions,
       );
       return {
         responseQuestions: response as string[],
@@ -140,14 +129,87 @@ export async function action({
 }
 
 export default function IndexPage() {
-  const data = useActionData<typeof action>();
-  const formRef = useRef<HTMLFormElement>(null);
-  const navigation = useNavigation();
-  const submit = useSubmit();
-  const [userInput, setUserInput] = useState<string>("");
+  const createFormData = (data: Record<string, any>) => {
+    const formData = new FormData();
+    Object.entries(data).forEach(([key, value]) => {
+      formData.set(key, value);
+    });
+    return formData;
+  };
+  // The application is a react-based web tool designed to enhance learning.
+  // Users can upload a picture of a textbook page or capture one using their camera.
+  // The user can specify a topic of interest.
+  // The backend uses OCR to extract text from the image.
+  // It generates a list of questions that cover the same material as the textbook but in the context of the user's chosen topic.
+  // This allows users to learn textbook content in a more engaging and personalized way.
+  const [state, send] = useMachine({
+    id: "learningApp",
+    initial: "idle",
+    states: {
+      // The application starts in an idle state
+      idle: {
+        on: {
+          // When a user specifies a topic of interest, the application moves to the 'topicSpecified' state
+          SPECIFY_TOPIC: "topicSpecified",
+        },
+      },
+      // After a topic is specified
+      topicSpecified: {
+        on: {
+          // If a user uploads or captures an image, the application moves to the 'questionGenerationInProgress' state
+          SEND_IMAGE_AND_TOPIC: {
+            target: "questionGenerationInProgress",
+            actions: () => submit({ type: "generateQuestions", image, topic }),
+          },
+        },
+      },
+      // After an image is uploaded and topic is specified
+      questionGenerationInProgress: {
+        on: {
+          // If question generation is successful, the application moves to the 'questionsGenerated' state
+          QUESTIONS_GENERATED: "questionsGenerated",
+          // If question generation fails, the application moves back to the 'idle' state
+          QUESTIONS_FAILED: "idle",
+        },
+      },
+      // After questions are generated
+      questionsGenerated: {
+        on: {
+          // The application stays in this state until a new image is uploaded and a new topic is specified
+          SEND_IMAGE_AND_TOPIC: {
+            target: "questionGenerationInProgress",
+            actions: () => submit({ type: "generateQuestions", image, topic }),
+          },
+        },
+      },
+    },
+  });
+
+  const [topic, setTopic] = useState<string>("War");
   const [image, setImage] = useState<string>("");
   const webcamRef = React.useRef<Webcam>(null);
-  console.log(data);
+  const data = useActionData<typeof action>();
+  const navigation = useNavigation();
+  const submit = useSubmit();
+  useEffect(() => {
+    if (topic) {
+      send({ type: "SPECIFY_TOPIC" });
+    }
+    // TODO add a way to make the topic go back to unspecified later.  Need to modify state machine
+  }, [topic, send]);
+
+  useEffect(() => {
+    if (data?.error) {
+      send({ type: "ERROR", payload: data.error });
+    } else if (data?.answeredQuestionResponse) {
+      send({
+        type: "ANSWERED_QUESTION",
+        payload: data.answeredQuestionResponse,
+      });
+    } else if (data?.responseQuestions) {
+      send({ type: "QUESTIONS_GENERATED", payload: data.responseQuestions });
+    }
+  }, [data, send]);
 
   const isSubmitting = navigation.state === "submitting";
 
@@ -158,41 +220,50 @@ export default function IndexPage() {
     }
   }, [webcamRef]);
 
-  const handleFormSubmit = async (
-    event: Pick<Event, "preventDefault" | "stopPropagation">
-  ) => {
-    const formData = new FormData();
-    formData.set("message", userInput);
-    formData.set("image", image);
-    submit(formData, {
-      method: "POST",
-    });
-    event.preventDefault();
-    event.stopPropagation();
-  };
+  useEffect(() => {
+    if (state.value === "topicSpecified") {
+      submit(
+        createFormData({
+          type: "generateQuestions",
+          image: image,
+          topic: topic,
+        }),
+        {
+          method: "POST"
+        }
+      );
+    }
+  }, [image, topic, state, submit]);
 
   return (
     <main className="flex flex-col h-screen w-screen bg-gray-100 p-4">
-      <Webcam audio={false} ref={webcamRef} screenshotFormat="image/jpeg" />
-      <button onClick={capture}>Capture photo</button>
+      <Webcam
+        data-cy="camera-input"
+        audio={false}
+        ref={webcamRef}
+        screenshotFormat="image/jpeg"
+      />
+      <button data-cy="capture-button" onClick={capture}>
+        Capture photo
+      </button>
       <Form
+        data-cy="upload-button"
         aria-disabled={isSubmitting}
         method="post"
-        ref={formRef}
-        onSubmit={handleFormSubmit}
         replace
         className="flex flex-col justify-between h-full"
       >
         <textarea
           id="message"
+          data-cy="topic-input"
           aria-disabled={isSubmitting}
           className="input-box flex-grow h-full p-2 rounded-md border-2 border-gray-300 mr-2"
           placeholder="Type your message to ChatGPT here..."
           name="message"
           required
-          value={userInput}
+          value={topic}
           onChange={(e) => {
-            setUserInput(e.target.value);
+            setTopic(e.target.value);
           }}
           disabled={isSubmitting}
           style={{
@@ -204,12 +275,16 @@ export default function IndexPage() {
         <button
           type="submit"
           disabled={isSubmitting}
+          data-cy="submit-button"
           className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded mt-2"
         >
           Submit
         </button>
       </Form>
-      <div className="bg-white rounded-md shadow-lg mt-4 p-4">
+      <div
+        className="bg-white rounded-md shadow-lg mt-4 p-4"
+        data-cy="question-list"
+      >
         {data?.responseQuestions ||
           data?.error ||
           "// This is where your ChatGPT response will be displayed"}

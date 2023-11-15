@@ -5,3 +5,14 @@ node_modules
 /public/build
 .env
 .idea
+
+node_modules
+
+/build
+/public/build
+.env
+
+/cypress/screenshots
+/cypress/videos
+/prisma/data.db
+/prisma/data.db-journal

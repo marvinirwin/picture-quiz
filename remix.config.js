@@ -1,12 +1,27 @@
 /** @type {import('@remix-run/dev').AppConfig} */
-export default {
-  ignoredRouteFiles: ["**/.*"],
-  serverModuleFormat: "esm",
-  // appDirectory: "app",
-  // assetsBuildDirectory: "public/build",
-  // publicPath: "/build/",
-  // serverBuildPath: "build/index.js",
-  future: {
+module.exports = {
+  cacheDirectory: "./node_modules/.cache/remix",
+  ignoredRouteFiles: ["**/.*", "**/*.test.{ts,tsx}"],
+  serverModuleFormat: "cjs",
+  browserNodeBuiltinsPolyfill: {
+    modules: {
+      util: true,
+      events: true,
+      fs: true,
+      "fs/promises": true,
+      buffer: true,
+      stream: true,
+      crypto: true,
+      path: true,
+      os: true,
+      http: true,
+      assert: true,
+      tls: true,
+      net: true,
+      url: true,
+      https: true,
+      child_process: true,
+      querystring: true,
+    },
   },
-  browserNodeBuiltinsPolyfill: { modules: { "fs/promises": true } }
 };
