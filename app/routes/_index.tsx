@@ -1,3 +1,5 @@
+import fs from "fs";
+
 import { ActionFunctionArgs } from "@remix-run/node";
 import {
   Form,
@@ -6,8 +8,9 @@ import {
   useSubmit,
 } from "@remix-run/react";
 import { useMachine } from "@xstate/react";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Webcam from "react-webcam";
+import { createMachine } from "xstate";
 
 import { askLanguageModelShape } from "~/ChatGPTUtils";
 
@@ -74,22 +77,31 @@ export async function action({
       },
     };
   } else if (type === "generateQuestions") {
-    const imageBlob = body.get("image") as Blob;
-    const imageBuffer = Buffer.from(await imageBlob.arrayBuffer());
+    console.log("Entered generateQuestions block");
+    const imageString = body.get("image") as string;
+    const imageBuffer = Buffer.from(imageString, "base64");
+    fs.writeFileSync("test.png", imageBuffer);
+    console.log("Image buffer created");
     try {
+      console.log("Attempting text detection");
       const [result] = await vision.textDetection(imageBuffer);
       const error = result.error;
+      console.log(error);
       if (error) {
+        console.log("Text detection error: ", error.message);
         return {
           error: error.message || "Unknown text detection error",
         };
       }
+      console.log("Text detection successful");
       const detection = result.textAnnotations?.[0];
       if (!detection) {
+        console.log("Detection object is empty");
         return {
           error: `Detection object is empty`,
         };
       }
+      console.log("Attempting to generate questions");
       const response: string[] = await askLanguageModelShape<string[]>(
         generateQuestionsFromTextbook({
           ocrText: detection.description || "",
@@ -113,11 +125,12 @@ export async function action({
         },
         setQuestions,
       );
+      console.log("Questions generated successfully");
       return {
         responseQuestions: response as string[],
       };
     } catch (error: any) {
-      console.log(error);
+      console.log("Error occurred: ", error);
       return {
         error: error.message || "Something went wrong! Please try again.",
       };
@@ -142,48 +155,51 @@ export default function IndexPage() {
   // The backend uses OCR to extract text from the image.
   // It generates a list of questions that cover the same material as the textbook but in the context of the user's chosen topic.
   // This allows users to learn textbook content in a more engaging and personalized way.
-  const [state, send] = useMachine({
-    id: "learningApp",
-    initial: "idle",
-    states: {
-      // The application starts in an idle state
-      idle: {
-        on: {
-          // When a user specifies a topic of interest, the application moves to the 'topicSpecified' state
-          SPECIFY_TOPIC: "topicSpecified",
-        },
-      },
-      // After a topic is specified
-      topicSpecified: {
-        on: {
-          // If a user uploads or captures an image, the application moves to the 'questionGenerationInProgress' state
-          SEND_IMAGE_AND_TOPIC: {
-            target: "questionGenerationInProgress",
-            actions: () => submit({ type: "generateQuestions", image, topic }),
+  const machine = useMemo(
+    () =>
+      createMachine({
+        id: "learningApp",
+        initial: "idle",
+        states: {
+          // The application starts in an idle state
+          idle: {
+            on: {
+              // When a user specifies a topic of interest, the application moves to the 'topicSpecified' state
+              SPECIFY_TOPIC: "topicSpecified",
+            },
+          },
+          // After a topic is specified
+          topicSpecified: {
+            on: {
+              // If a user uploads or captures an image, the application moves to the 'questionGenerationInProgress' state
+              SEND_IMAGE_AND_TOPIC: {
+                target: "questionGenerationInProgress",
+              },
+            },
+          },
+          // After an image is uploaded and topic is specified
+          questionGenerationInProgress: {
+            on: {
+              // If question generation is successful, the application moves to the 'questionsGenerated' state
+              QUESTIONS_GENERATED: "questionsGenerated",
+              // If question generation fails, the application moves back to the 'idle' state
+              QUESTIONS_FAILED: "idle",
+            },
+          },
+          // After questions are generated
+          questionsGenerated: {
+            on: {
+              // The application stays in this state until a new image is uploaded and a new topic is specified
+              SEND_IMAGE_AND_TOPIC: {
+                target: "questionGenerationInProgress",
+              },
+            },
           },
         },
-      },
-      // After an image is uploaded and topic is specified
-      questionGenerationInProgress: {
-        on: {
-          // If question generation is successful, the application moves to the 'questionsGenerated' state
-          QUESTIONS_GENERATED: "questionsGenerated",
-          // If question generation fails, the application moves back to the 'idle' state
-          QUESTIONS_FAILED: "idle",
-        },
-      },
-      // After questions are generated
-      questionsGenerated: {
-        on: {
-          // The application stays in this state until a new image is uploaded and a new topic is specified
-          SEND_IMAGE_AND_TOPIC: {
-            target: "questionGenerationInProgress",
-            actions: () => submit({ type: "generateQuestions", image, topic }),
-          },
-        },
-      },
-    },
-  });
+      }),
+    [],
+  );
+  const [state, send] = useMachine(machine);
 
   const [topic, setTopic] = useState<string>("War");
   const [image, setImage] = useState<string>("");
@@ -221,7 +237,7 @@ export default function IndexPage() {
   }, [webcamRef]);
 
   useEffect(() => {
-    if (state.value === "topicSpecified") {
+    if (state.value === "topicSpecified" && image && topic) {
       submit(
         createFormData({
           type: "generateQuestions",
@@ -229,8 +245,8 @@ export default function IndexPage() {
           topic: topic,
         }),
         {
-          method: "POST"
-        }
+          method: "POST",
+        },
       );
     }
   }, [image, topic, state, submit]);
@@ -241,7 +257,7 @@ export default function IndexPage() {
         data-cy="camera-input"
         audio={false}
         ref={webcamRef}
-        screenshotFormat="image/jpeg"
+        screenshotFormat="image/png"
       />
       <button data-cy="capture-button" onClick={capture}>
         Capture photo

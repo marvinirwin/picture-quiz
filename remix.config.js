@@ -24,4 +24,5 @@ module.exports = {
       querystring: true,
     },
   },
+  sourceMap: true
 };
